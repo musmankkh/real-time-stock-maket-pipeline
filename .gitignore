@@ -14,5 +14,8 @@ __pycache__/
 .env
 
 dbt_stocks/profiles.yml
+dbt_stocks/target/
+dbt_stocks/.user.yml
+dbt_stocks/logs/
 # Logs
 *.log
