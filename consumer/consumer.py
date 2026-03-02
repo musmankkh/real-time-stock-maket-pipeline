@@ -6,11 +6,11 @@ import snowflake.connector
 from dotenv import load_dotenv
 import os
 
-load_dotenv()  # Load Snowflake credentials from .env file
+load_dotenv()
 
 # ─── Kafka Config ───────────────────────────────────────────────
-KAFKA_BROKER = "host.docker.internal:29092"
-KAFKA_TOPIC  = "stock-quotes"          # ← Must match producer
+KAFKA_BROKER = "localhost:29092"
+KAFKA_TOPIC  = "stock-quotes"
 KAFKA_GROUP  = "bronze-consumer1"
 
 # ─── Snowflake Config ───────────────────────────────────────────
@@ -23,8 +23,7 @@ SNOWFLAKE_SCHEMA    = os.getenv("SNOWFLAKE_SCHEMA")
 SNOWFLAKE_TABLE     = "RAWSTOCKS"
 
 # ─── Batch Size ─────────────────────────────────────────────────
-BATCH_SIZE = 100
-
+BATCH_SIZE = 10
 # ─── Snowflake Connection ────────────────────────────────────────
 print("Connecting to Snowflake...")
 conn = snowflake.connector.connect(
@@ -37,8 +36,6 @@ conn = snowflake.connector.connect(
 )
 cursor = conn.cursor()
 print("Snowflake connected ✅")
-
-
 
 # ─── Kafka Consumer ──────────────────────────────────────────────
 print("Connecting to Kafka...")
@@ -55,16 +52,23 @@ print(f"Listening to topic '{KAFKA_TOPIC}' ✅")
 # ─── Insert Batch Function ───────────────────────────────────────
 def insert_batch(batch):
     try:
-        cursor.executemany(
-            f"""
-            INSERT INTO {SNOWFLAKE_TABLE} 
-                (symbol, fetched_at, open_price, high_price, low_price, current_price, prev_close, raw_record)
-            SELECT %s, %s, %s, %s, %s, %s, %s, PARSE_JSON(%s)
-            """,
-            batch
-        )
+        select_rows = []
+        flat_values = []
+
+        for row in batch:
+            select_rows.append("SELECT %s, %s, %s, %s, %s, %s, %s, PARSE_JSON(%s)")
+            flat_values.extend(row)
+
+        sql = f"""
+            INSERT INTO {SNOWFLAKE_TABLE}
+                (symbol, fetched_at, open_price, high_price, low_price,
+                 current_price, prev_close, raw_record)
+            {" UNION ALL ".join(select_rows)}
+        """
+        cursor.execute(sql, flat_values)
         conn.commit()
         print(f"✅ Inserted batch of {len(batch)} records into Snowflake.")
+
     except Exception as e:
         print(f"❌ Batch insert failed: {e}")
         conn.rollback()
@@ -76,14 +80,13 @@ try:
     for message in consumer:
         record = message.value
 
-        # Extract Finnhub fields
         symbol        = record.get("symbol", "unknown")
         fetched_at    = str(record.get("fetched_at", int(time.time())))
-        open_price    = record.get("o")    # open
-        high_price    = record.get("h")    # high
-        low_price     = record.get("l")    # low
-        current_price = record.get("c")    # current
-        prev_close    = record.get("pc")   # previous close
+        open_price    = record.get("o")
+        high_price    = record.get("h")
+        low_price     = record.get("l")
+        current_price = record.get("c")
+        prev_close    = record.get("pc")
 
         batch.append((
             symbol,
@@ -98,7 +101,6 @@ try:
 
         print(f"📨 Received → {symbol} | Price: {current_price} | Time: {fetched_at}")
 
-        # ── Insert when batch is full ──
         if len(batch) >= BATCH_SIZE:
             insert_batch(batch)
             batch.clear()
@@ -108,7 +110,6 @@ except KeyboardInterrupt:
     print("\nShutdown signal received (Ctrl+C)...")
 
 finally:
-    # Insert remaining records
     if batch:
         print(f"Inserting remaining {len(batch)} records...")
         insert_batch(batch)

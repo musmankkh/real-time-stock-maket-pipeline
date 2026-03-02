@@ -13,5 +13,6 @@ __pycache__/
 # Environment variables
 .env
 
+dbt_stocks/profiles.yml
 # Logs
 *.log
